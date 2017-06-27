@@ -17,9 +17,9 @@ package com.naman14.timber;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.AlarmManager;
 import android.app.Notification;
-import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
@@ -36,13 +36,14 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.media.AudioManager;
 import android.media.AudioManager.OnAudioFocusChangeListener;
-import android.media.MediaMetadata;
+import android.media.MediaMetadataEditor;
+import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
+import android.media.RemoteControlClient;
 import android.media.audiofx.AudioEffect;
-import android.media.session.MediaSession;
-import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -55,17 +56,26 @@ import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio.AlbumColumns;
 import android.provider.MediaStore.Audio.AudioColumns;
+import android.support.v4.app.NotificationManagerCompat;
+import android.support.v4.media.MediaMetadataCompat;
+import android.support.v4.media.session.MediaSessionCompat;
+import android.support.v4.media.session.PlaybackStateCompat;
+import android.support.v7.app.NotificationCompat;
 import android.support.v7.graphics.Palette;
 import android.text.TextUtils;
 import android.util.Log;
 
 import com.naman14.timber.helpers.MediaButtonIntentReceiver;
 import com.naman14.timber.helpers.MusicPlaybackTrack;
+import com.naman14.timber.lastfmapi.LastFmClient;
+import com.naman14.timber.lastfmapi.models.LastfmUserSession;
+import com.naman14.timber.lastfmapi.models.ScrobbleQuery;
 import com.naman14.timber.permissions.Nammu;
 import com.naman14.timber.provider.MusicPlaybackState;
 import com.naman14.timber.provider.RecentStore;
 import com.naman14.timber.provider.SongPlayCount;
 import com.naman14.timber.utils.NavigationUtils;
+import com.naman14.timber.utils.PreferencesUtility;
 import com.naman14.timber.utils.TimberUtils;
 import com.naman14.timber.utils.TimberUtils.IdType;
 import com.nostra13.universalimageloader.core.ImageLoader;
@@ -77,6 +87,10 @@ import java.util.LinkedList;
 import java.util.ListIterator;
 import java.util.Random;
 import java.util.TreeSet;
+
+import de.Maxr1998.trackselectorlib.ModNotInstalledException;
+import de.Maxr1998.trackselectorlib.NotificationHelper;
+import de.Maxr1998.trackselectorlib.TrackItem;
 
 @SuppressLint("NewApi")
 public class MusicService extends Service {
@@ -110,6 +124,7 @@ public class MusicService extends Service {
     public static final String CMDPREVIOUS = "previous";
     public static final String CMDNEXT = "next";
     public static final String CMDNOTIF = "buttonId";
+    public static final String UPDATE_PREFERENCES = "updatepreferences";
     public static final int NEXT = 2;
     public static final int LAST = 3;
     public static final int SHUFFLE_NONE = 0;
@@ -142,6 +157,10 @@ public class MusicService extends Service {
             MediaStore.Audio.Albums.ALBUM, MediaStore.Audio.Albums.ARTIST,
             MediaStore.Audio.Albums.LAST_YEAR
     };
+    private static final String[] NOTIFICATION_PROJECTION = new String[]{
+            "audio._id AS _id", AudioColumns.ALBUM_ID, AudioColumns.TITLE,
+            AudioColumns.ARTIST, AudioColumns.DURATION
+    };
     private static final Shuffler mShuffler = new Shuffler();
     private static final int NOTIFY_MODE_NONE = 0;
     private static final int NOTIFY_MODE_FOREGROUND = 1;
@@ -160,7 +179,7 @@ public class MusicService extends Service {
     private AlarmManager mAlarmManager;
     private PendingIntent mShutdownIntent;
     private boolean mShutdownScheduled;
-    private NotificationManager mNotificationManager;
+    private NotificationManagerCompat mNotificationManager;
     private Cursor mCursor;
     private Cursor mAlbumCursor;
     private AudioManager mAudioManager;
@@ -173,7 +192,9 @@ public class MusicService extends Service {
     private boolean mQueueIsSaveable = true;
     private boolean mPausedByTransientLossOfFocus = false;
 
-    private MediaSession mSession;
+    private MediaSessionCompat mSession;
+    @SuppressWarnings("deprecation")
+    private RemoteControlClient mRemoteControlClient;
 
     private ComponentName mMediaButtonReceiverComponent;
 
@@ -209,6 +230,7 @@ public class MusicService extends Service {
     private BroadcastReceiver mUnmountReceiver = null;
     private MusicPlaybackState mPlaybackStateStore;
     private boolean mShowAlbumArtOnLockscreen;
+    private boolean mActivateXTrackSelector;
     private SongPlayCount mSongPlayCount;
     private RecentStore mRecentStore;
     private final BroadcastReceiver mIntentReceiver = new BroadcastReceiver() {
@@ -262,7 +284,7 @@ public class MusicService extends Service {
         if (D) Log.d(TAG, "Creating service");
         super.onCreate();
 
-        mNotificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        mNotificationManager = NotificationManagerCompat.from(this);
 
         // gets a pointer to the playback state store
         mPlaybackStateStore = MusicPlaybackState.getInstance(this);
@@ -285,6 +307,8 @@ public class MusicService extends Service {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
             setUpMediaSession();
+        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH)
+            setUpRemoteControlClient();
 
         mPreferences = getSharedPreferences("Service", 0);
         mCardId = getCardId();
@@ -331,11 +355,40 @@ public class MusicService extends Service {
         reloadQueueAfterPermissionCheck();
         notifyChange(QUEUE_CHANGED);
         notifyChange(META_CHANGED);
+        //Try to push LastFMCache
+        if (LastfmUserSession.getSession(this) != null) {
+            LastFmClient.getInstance(this).Scrobble(null);
+        }
+        PreferencesUtility pref = PreferencesUtility.getInstance(this);
+        mShowAlbumArtOnLockscreen = pref.getSetAlbumartLockscreen();
+        mActivateXTrackSelector = pref.getXPosedTrackselectorEnabled();
+    }
+
+    @SuppressWarnings("deprecation")
+    @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
+    private void setUpRemoteControlClient() {
+        //Legacy for ICS
+        if (mRemoteControlClient == null) {
+            Intent mediaButtonIntent = new Intent(Intent.ACTION_MEDIA_BUTTON);
+            mediaButtonIntent.setComponent(mMediaButtonReceiverComponent);
+            PendingIntent mediaPendingIntent = PendingIntent.getBroadcast(this, 0, mediaButtonIntent, 0);
+
+            // create and register the remote control client
+            mRemoteControlClient = new RemoteControlClient(mediaPendingIntent);
+            mAudioManager.registerRemoteControlClient(mRemoteControlClient);
+        }
+
+        mRemoteControlClient.setTransportControlFlags(
+                RemoteControlClient.FLAG_KEY_MEDIA_PLAY |
+                        RemoteControlClient.FLAG_KEY_MEDIA_PAUSE |
+                        RemoteControlClient.FLAG_KEY_MEDIA_PREVIOUS |
+                        RemoteControlClient.FLAG_KEY_MEDIA_NEXT |
+                        RemoteControlClient.FLAG_KEY_MEDIA_STOP);
     }
 
     private void setUpMediaSession() {
-        mSession = new MediaSession(this, "Timber");
-        mSession.setCallback(new MediaSession.Callback() {
+        mSession = new MediaSessionCompat(this, "Timber");
+        mSession.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPause() {
                 pause();
@@ -370,13 +423,17 @@ public class MusicService extends Service {
                 releaseServiceUiAndStop();
             }
         });
-        mSession.setFlags(MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        mSession.setFlags(MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
     }
 
     @Override
     public void onDestroy() {
         if (D) Log.d(TAG, "Destroying service");
         super.onDestroy();
+        //Try to push LastFMCache
+        if (LastfmUserSession.getSession(this).isLogedin()) {
+            LastFmClient.getInstance(this).Scrobble(null);
+        }
         // Remove any sound effects
         final Intent audioEffectsIntent = new Intent(
                 AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
@@ -436,7 +493,16 @@ public class MusicService extends Service {
             MediaButtonIntentReceiver.completeWakefulIntent(intent);
         }
 
-        return START_STICKY;
+        return START_NOT_STICKY; //no sense to use START_STICKY with using startForeground
+    }
+
+    void scrobble() {
+        if (LastfmUserSession.getSession(this).isLogedin()) {
+            Log.d("Scrobble", "to LastFM");
+            String trackname = getTrackName();
+            if (trackname != null)
+                LastFmClient.getInstance(this).Scrobble(new ScrobbleQuery(getArtistName(), trackname, System.currentTimeMillis() / 1000));
+        }
     }
 
     private void releaseServiceUiAndStop() {
@@ -464,6 +530,11 @@ public class MusicService extends Service {
 
         if (D) Log.d(TAG, "handleCommandIntent: action = " + action + ", command = " + command);
 
+        if (NotificationHelper.checkIntent(intent)) {
+            goToPosition(mPlayPos + NotificationHelper.getPosition(intent));
+            return;
+        }
+
         if (CMDNEXT.equals(command) || NEXT_ACTION.equals(action)) {
             gotoNext(true);
         } else if (CMDPREVIOUS.equals(command) || PREVIOUS_ACTION.equals(action)
@@ -490,7 +561,23 @@ public class MusicService extends Service {
             cycleRepeat();
         } else if (SHUFFLE_ACTION.equals(action)) {
             cycleShuffle();
+        } else if (UPDATE_PREFERENCES.equals(action)) {
+            onPreferencesUpdate(intent.getExtras());
         }
+    }
+
+    private void onPreferencesUpdate(Bundle extras) {
+        mShowAlbumArtOnLockscreen = extras.getBoolean("lockscreen", mShowAlbumArtOnLockscreen);
+        mActivateXTrackSelector = extras.getBoolean("xtrack",mActivateXTrackSelector);
+        LastfmUserSession session = LastfmUserSession.getSession(this);
+        session.mToken = extras.getString("lf_token", session.mToken);
+        session.mUsername = extras.getString("lf_user", session.mUsername);
+        if ("logout".equals(session.mToken)) {
+            session.mToken = null;
+            session.mUsername = null;
+        }
+        notifyChange(META_CHANGED);
+
     }
 
     private void updateNotification() {
@@ -608,6 +695,12 @@ public class MusicService extends Service {
 
     private void stop(final boolean goToIdle) {
         if (D) Log.d(TAG, "Stopping playback, goToIdle = " + goToIdle);
+        long duration = this.duration();
+        long position = this.position();
+        if (duration > 30000 && (position >= duration / 2) || position > 240000) {
+            scrobble();
+        }
+
         if (mPlayer.isInitialized()) {
             mPlayer.stop();
         }
@@ -1002,6 +1095,8 @@ public class MusicService extends Service {
         // Update the lockscreen controls
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
             updateMediaSession(what);
+        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH)
+            updateRemoteControlClient(what);
 
         if (what.equals(POSITION_CHANGED)) {
             return;
@@ -1011,6 +1106,7 @@ public class MusicService extends Service {
         intent.putExtra("id", getAudioId());
         intent.putExtra("artist", getArtistName());
         intent.putExtra("album", getAlbumName());
+        intent.putExtra("albumid", getAlbumId());
         intent.putExtra("track", getTrackName());
         intent.putExtra("playing", isPlaying());
 
@@ -1046,47 +1142,85 @@ public class MusicService extends Service {
 
     }
 
+    @SuppressWarnings("deprecation")
+    @TargetApi(Build.VERSION_CODES.ICE_CREAM_SANDWICH)
+    private void updateRemoteControlClient(final String what) {
+        //Legacy for ICS
+        if (mRemoteControlClient != null) {
+            int playState = mIsSupposedToBePlaying
+                    ? RemoteControlClient.PLAYSTATE_PLAYING
+                    : RemoteControlClient.PLAYSTATE_PAUSED;
+            if (what.equals(META_CHANGED) || what.equals(QUEUE_CHANGED)) {
+                Bitmap albumArt = null;
+                if (mShowAlbumArtOnLockscreen) {
+                    albumArt = ImageLoader.getInstance().loadImageSync(TimberUtils.getAlbumArtUri(getAlbumId()).toString());
+                    if (albumArt != null) {
+
+                        Bitmap.Config config = albumArt.getConfig();
+                        if (config == null) {
+                            config = Bitmap.Config.ARGB_8888;
+                        }
+                        albumArt = albumArt.copy(config, false);
+                    }
+                }
+
+                RemoteControlClient.MetadataEditor editor = mRemoteControlClient.editMetadata(true);
+                editor.putString(MediaMetadataRetriever.METADATA_KEY_ALBUM, getAlbumName());
+                editor.putString(MediaMetadataRetriever.METADATA_KEY_ARTIST, getArtistName());
+                editor.putString(MediaMetadataRetriever.METADATA_KEY_TITLE, getTrackName());
+                editor.putLong(MediaMetadataRetriever.METADATA_KEY_DURATION, duration());
+                editor.putBitmap(MediaMetadataEditor.BITMAP_KEY_ARTWORK, albumArt);
+                editor.apply();
+
+            }
+            mRemoteControlClient.setPlaybackState(playState);
+        }
+    }
+
+
     private void updateMediaSession(final String what) {
         int playState = mIsSupposedToBePlaying
-                ? PlaybackState.STATE_PLAYING
-                : PlaybackState.STATE_PAUSED;
+                ? PlaybackStateCompat.STATE_PLAYING
+                : PlaybackStateCompat.STATE_PAUSED;
 
         if (what.equals(PLAYSTATE_CHANGED) || what.equals(POSITION_CHANGED)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                mSession.setPlaybackState(new PlaybackState.Builder()
+                mSession.setPlaybackState(new PlaybackStateCompat.Builder()
                         .setState(playState, position(), 1.0f)
-                        .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE |
-                                PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                        .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_PLAY_PAUSE |
+                                PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
                         .build());
             }
         } else if (what.equals(META_CHANGED) || what.equals(QUEUE_CHANGED)) {
-            Bitmap albumArt = ImageLoader.getInstance().loadImageSync(TimberUtils.getAlbumArtUri(getAlbumId()).toString());
-            if (albumArt != null) {
+            Bitmap albumArt = null;
+            if (mShowAlbumArtOnLockscreen) {
+                albumArt = ImageLoader.getInstance().loadImageSync(TimberUtils.getAlbumArtUri(getAlbumId()).toString());
+                if (albumArt != null) {
 
-                Bitmap.Config config = albumArt.getConfig();
-                if (config == null) {
-                    config = Bitmap.Config.ARGB_8888;
+                    Bitmap.Config config = albumArt.getConfig();
+                    if (config == null) {
+                        config = Bitmap.Config.ARGB_8888;
+                    }
+                    albumArt = albumArt.copy(config, false);
                 }
-                albumArt = albumArt.copy(config, false);
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                mSession.setMetadata(new MediaMetadata.Builder()
-                        .putString(MediaMetadata.METADATA_KEY_ARTIST, getArtistName())
-                        .putString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST, getAlbumArtistName())
-                        .putString(MediaMetadata.METADATA_KEY_ALBUM, getAlbumName())
-                        .putString(MediaMetadata.METADATA_KEY_TITLE, getTrackName())
-                        .putLong(MediaMetadata.METADATA_KEY_DURATION, duration())
-                        .putLong(MediaMetadata.METADATA_KEY_TRACK_NUMBER, getQueuePosition() + 1)
-                        .putLong(MediaMetadata.METADATA_KEY_NUM_TRACKS, getQueue().length)
-                        .putString(MediaMetadata.METADATA_KEY_GENRE, getGenreName())
-                        .putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART,
-                                mShowAlbumArtOnLockscreen ? albumArt : null)
+                mSession.setMetadata(new MediaMetadataCompat.Builder()
+                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, getArtistName())
+                        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ARTIST, getAlbumArtistName())
+                        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, getAlbumName())
+                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, getTrackName())
+                        .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration())
+                        .putLong(MediaMetadataCompat.METADATA_KEY_TRACK_NUMBER, getQueuePosition() + 1)
+                        .putLong(MediaMetadataCompat.METADATA_KEY_NUM_TRACKS, getQueue().length)
+                        .putString(MediaMetadataCompat.METADATA_KEY_GENRE, getGenreName())
+                        .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, albumArt)
                         .build());
 
-                mSession.setPlaybackState(new PlaybackState.Builder()
+                mSession.setPlaybackState(new PlaybackStateCompat.Builder()
                         .setState(playState, position(), 1.0f)
-                        .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE | PlaybackState.ACTION_PLAY_PAUSE |
-                                PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS)
+                        .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE | PlaybackStateCompat.ACTION_PLAY_PAUSE |
+                                PlaybackStateCompat.ACTION_SKIP_TO_NEXT | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS)
                         .build());
             }
         }
@@ -1115,7 +1249,7 @@ public class MusicService extends Service {
             mNotificationPostTime = System.currentTimeMillis();
         }
 
-        Notification.Builder builder = new Notification.Builder(this)
+        android.support.v4.app.NotificationCompat.Builder builder = new NotificationCompat.Builder(this)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setLargeIcon(artwork)
                 .setContentIntent(clickIntent)
@@ -1136,15 +1270,52 @@ public class MusicService extends Service {
         }
         if (TimberUtils.isLollipop()) {
             builder.setVisibility(Notification.VISIBILITY_PUBLIC);
-            Notification.MediaStyle style = new Notification.MediaStyle()
+            NotificationCompat.MediaStyle style = new NotificationCompat.MediaStyle()
                     .setMediaSession(mSession.getSessionToken())
                     .setShowActionsInCompactView(0, 1, 2, 3);
             builder.setStyle(style);
         }
         if (artwork != null && TimberUtils.isLollipop())
             builder.setColor(Palette.from(artwork).generate().getVibrantColor(Color.parseColor("#403f4d")));
+        Notification n = builder.build();
 
-        return builder.build();
+        if (mActivateXTrackSelector) {
+            addXTrackSelector(n);
+        }
+
+        return n;
+    }
+
+    private void addXTrackSelector(Notification n) {
+        if (NotificationHelper.isSupported(n)) {
+            StringBuilder selection = new StringBuilder();
+            StringBuilder order = new StringBuilder().append("CASE _id \n");
+            for (int i = 0; i < mPlaylist.size(); i++) {
+                selection.append("_id=").append(mPlaylist.get(i).mId).append(" OR ");
+                order.append("WHEN ").append(mPlaylist.get(i).mId).append(" THEN ").append(i).append("\n");
+            }
+            order.append("END");
+            Cursor c = getContentResolver().query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, NOTIFICATION_PROJECTION, selection.substring(0, selection.length() - 3), null, order.toString());
+            if (c != null && c.getCount() != 0) {
+                c.moveToFirst();
+                ArrayList<Bundle> list = new ArrayList<>();
+                do {
+                    TrackItem t = new TrackItem()
+                            .setArt(ImageLoader.getInstance()
+                                    .loadImageSync(TimberUtils.getAlbumArtUri(c.getLong(c.getColumnIndexOrThrow(AudioColumns.ALBUM_ID))).toString()))
+                            .setTitle(c.getString(c.getColumnIndexOrThrow(AudioColumns.TITLE)))
+                            .setArtist(c.getString(c.getColumnIndexOrThrow(AudioColumns.ARTIST)))
+                            .setDuration(TimberUtils.makeShortTimeString(this, c.getInt(c.getColumnIndexOrThrow(AudioColumns.DURATION)) / 1000));
+                    list.add(t.get());
+                } while (c.moveToNext());
+                try {
+                    NotificationHelper.insertToNotification(n, list, this, getQueuePosition());
+                } catch (ModNotInstalledException e) {
+                    e.printStackTrace();
+                }
+                c.close();
+            }
+        }
     }
 
     private final PendingIntent retrievePlaybackAction(final String action) {
@@ -1861,6 +2032,30 @@ public class MusicService extends Service {
         }
     }
 
+    public void goToPosition(int pos) {
+        synchronized (this) {
+            if (mPlaylist.size() <= 0) {
+                if (D) Log.d(TAG, "No play queue");
+                scheduleDelayedShutdown();
+                return;
+            }
+            if (pos < 0) {
+                return;
+            }
+            if (pos == mPlayPos) {
+                if (!isPlaying()) {
+                    play();
+                }
+                return;
+            }
+            stop(false);
+            setAndRecordPlayPos(pos);
+            openCurrentAndNext();
+            play();
+            notifyChange(META_CHANGED);
+        }
+    }
+
     public void setAndRecordPlayPos(int nextPos) {
         synchronized (this) {
 
@@ -1877,8 +2072,6 @@ public class MusicService extends Service {
 
     public void prev(boolean forcePrevious) {
         synchronized (this) {
-
-
             boolean goPrevious = getRepeatMode() != REPEAT_CURRENT &&
                     (position() < REWIND_INSTEAD_PREVIOUS_THRESHOLD || forcePrevious);
 
@@ -2013,11 +2206,6 @@ public class MusicService extends Service {
         notifyChange(PLAYLIST_CHANGED);
     }
 
-    public void setLockscreenAlbumArt(boolean enabled) {
-        mShowAlbumArtOnLockscreen = enabled;
-        notifyChange(META_CHANGED);
-    }
-
     public interface TrackErrorExtra {
 
         String TRACK_NAME = "trackname";
@@ -2073,6 +2261,7 @@ public class MusicService extends Service {
                         }
                         break;
                     case TRACK_WENT_TO_NEXT:
+                        mService.get().scrobble();
                         service.setAndRecordPlayPos(service.mNextPlayPos);
                         service.setNextTrack();
                         if (service.mCursor != null) {
@@ -2204,9 +2393,13 @@ public class MusicService extends Service {
 
 
         public void setDataSource(final String path) {
-            mIsInitialized = setDataSourceImpl(mCurrentMediaPlayer, path);
-            if (mIsInitialized) {
-                setNextDataSource(null);
+            try {
+                mIsInitialized = setDataSourceImpl(mCurrentMediaPlayer, path);
+                if (mIsInitialized) {
+                    setNextDataSource(null);
+                }
+            } catch (IllegalStateException e) {
+                e.printStackTrace();
             }
         }
 
@@ -2256,14 +2449,18 @@ public class MusicService extends Service {
             mNextMediaPlayer = new MediaPlayer();
             mNextMediaPlayer.setWakeMode(mService.get(), PowerManager.PARTIAL_WAKE_LOCK);
             mNextMediaPlayer.setAudioSessionId(getAudioSessionId());
-            if (setDataSourceImpl(mNextMediaPlayer, path)) {
-                mNextMediaPath = path;
-                mCurrentMediaPlayer.setNextMediaPlayer(mNextMediaPlayer);
-            } else {
-                if (mNextMediaPlayer != null) {
-                    mNextMediaPlayer.release();
-                    mNextMediaPlayer = null;
+            try {
+                if (setDataSourceImpl(mNextMediaPlayer, path)) {
+                    mNextMediaPath = path;
+                    mCurrentMediaPlayer.setNextMediaPlayer(mNextMediaPlayer);
+                } else {
+                    if (mNextMediaPlayer != null) {
+                        mNextMediaPlayer.release();
+                        mNextMediaPlayer = null;
+                    }
                 }
+            } catch (IllegalStateException e) {
+                e.printStackTrace();
             }
         }
 
@@ -2316,7 +2513,11 @@ public class MusicService extends Service {
 
 
         public void setVolume(final float vol) {
-            mCurrentMediaPlayer.setVolume(vol, vol);
+            try {
+                mCurrentMediaPlayer.setVolume(vol, vol);
+            } catch (IllegalStateException e) {
+                e.printStackTrace();
+            }
         }
 
         public int getAudioSessionId() {
@@ -2601,12 +2802,6 @@ public class MusicService extends Service {
         @Override
         public int getAudioSessionId() throws RemoteException {
             return mService.get().getAudioSessionId();
-        }
-
-
-        @Override
-        public void setLockscreenAlbumArt(boolean enabled) {
-            mService.get().setLockscreenAlbumArt(enabled);
         }
 
     }
