@@ -130,7 +130,7 @@ public class PlaylistDetailActivity extends BaseActivity implements ATEActivityT
         setAlbumart();
 
         animate = getIntent().getBooleanExtra(Constants.ACTIVITY_TRANSITION, false);
-        if (animate && TimberUtils.isLollipop() && PreferencesUtility.getInstance(this).getAnimations()) {
+        if (animate && TimberUtils.isLollipop()) {
             getWindow().getEnterTransition().addListener(new EnterTransitionListener());
         } else {
             setUpSongs();
@@ -184,7 +184,7 @@ public class PlaylistDetailActivity extends BaseActivity implements ATEActivityT
 
     private void setRecyclerViewAapter() {
         recyclerView.setAdapter(mAdapter);
-        if (animate && TimberUtils.isLollipop() && PreferencesUtility.getInstance(mContext).getAnimations()) {
+        if (animate && TimberUtils.isLollipop()) {
             Handler handler = new Handler();
             handler.postDelayed(new Runnable() {
                 @Override
@@ -376,6 +376,13 @@ public class PlaylistDetailActivity extends BaseActivity implements ATEActivityT
         Intent returnIntent = new Intent();
         setResult(Activity.RESULT_OK, returnIntent);
         finish();
+    }
+
+    @Override
+    public void onMetaChanged() {
+        super.onMetaChanged();
+        if (mAdapter != null)
+            mAdapter.notifyDataSetChanged();
     }
 
     @Override

@@ -30,7 +30,9 @@ import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.Toolbar;
-import android.util.Log;
+import android.view.Menu;
+import android.view.MenuInflater;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.ImageView;
 import android.widget.SeekBar;
@@ -39,6 +41,7 @@ import android.widget.TextView;
 import com.afollestad.appthemeengine.ATE;
 import com.afollestad.appthemeengine.Config;
 import com.naman14.timber.MusicPlayer;
+import com.naman14.timber.MusicService;
 import com.naman14.timber.R;
 import com.naman14.timber.activities.BaseActivity;
 import com.naman14.timber.adapters.BaseQueueAdapter;
@@ -47,6 +50,7 @@ import com.naman14.timber.dataloaders.QueueLoader;
 import com.naman14.timber.listeners.MusicStateListener;
 import com.naman14.timber.timely.TimelyView;
 import com.naman14.timber.utils.Helpers;
+import com.naman14.timber.utils.NavigationUtils;
 import com.naman14.timber.utils.PreferencesUtility;
 import com.naman14.timber.utils.SlideTrackSwitcher;
 import com.naman14.timber.utils.TimberUtils;
@@ -219,6 +223,34 @@ public class BaseNowplayingFragment extends Fragment implements MusicStateListen
         super.onCreate(savedInstanceState);
         ateKey = Helpers.getATEKey(getActivity());
         accentColor = Config.accentColor(getActivity(), ateKey);
+    }
+
+    @Override
+    public void onActivityCreated(@Nullable Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+        setHasOptionsMenu(true);
+    }
+
+    @Override
+    public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
+        super.onCreateOptionsMenu(menu, inflater);
+        inflater.inflate(R.menu.now_playing, menu);
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.menu_go_to_album:
+                NavigationUtils.goToAlbum(getContext(), MusicPlayer.getCurrentAlbumId());
+                break;
+            case R.id.menu_go_to_artist:
+                NavigationUtils.goToArtist(getContext(), MusicPlayer.getCurrentArtistId());
+                break;
+            case R.id.action_lyrics:
+                NavigationUtils.goToLyrics(getContext());
+                break;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override
@@ -413,14 +445,19 @@ public class BaseNowplayingFragment extends Fragment implements MusicStateListen
     public void updateRepeatState() {
         if (repeat != null && getActivity() != null) {
             MaterialDrawableBuilder builder = MaterialDrawableBuilder.with(getActivity())
-                    .setIcon(MaterialDrawableBuilder.IconValue.REPEAT)
                     .setSizeDp(30);
 
-            if (getActivity() != null) {
-                if (MusicPlayer.getRepeatMode() == 0) {
+                if (MusicPlayer.getRepeatMode() == MusicService.REPEAT_NONE) {
+                    builder.setIcon(MaterialDrawableBuilder.IconValue.REPEAT);
                     builder.setColor(Config.textColorPrimary(getActivity(), ateKey));
-                } else builder.setColor(Config.accentColor(getActivity(), ateKey));
-            }
+                } else if (MusicPlayer.getRepeatMode() == MusicService.REPEAT_CURRENT) {
+                    builder.setIcon(MaterialDrawableBuilder.IconValue.REPEAT_ONCE);
+                    builder.setColor(Config.accentColor(getActivity(), ateKey));
+                } else if (MusicPlayer.getRepeatMode() == MusicService.REPEAT_ALL) {
+                    builder.setColor(Config.accentColor(getActivity(), ateKey));
+                    builder.setIcon(MaterialDrawableBuilder.IconValue.REPEAT);
+                }
+
 
             repeat.setImageDrawable(builder.build());
             repeat.setOnClickListener(new View.OnClickListener() {
@@ -512,8 +549,15 @@ public class BaseNowplayingFragment extends Fragment implements MusicStateListen
         if (songalbum != null)
             songalbum.setText(MusicPlayer.getAlbumName());
 
-        if (songartist != null)
+        if (songartist != null) {
             songartist.setText(MusicPlayer.getArtistName());
+            songartist.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    NavigationUtils.goToArtist(getContext(), MusicPlayer.getCurrentArtistId());
+                }
+            });
+        }
 
         if (songduration != null && getActivity() != null)
             songduration.setText(TimberUtils.makeShortTimeString(getActivity(), MusicPlayer.duration() / 1000));
