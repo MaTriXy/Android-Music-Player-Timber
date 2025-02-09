@@ -58,12 +58,13 @@ import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Audio.AlbumColumns;
 import android.provider.MediaStore.Audio.AudioColumns;
-import android.support.v4.app.NotificationManagerCompat;
+import androidx.core.app.NotificationManagerCompat;
 import android.support.v4.media.MediaMetadataCompat;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
-import android.support.v7.app.NotificationCompat;
-import android.support.v7.graphics.Palette;
+
+import androidx.media.app.NotificationCompat;
+import androidx.palette.graphics.Palette;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -333,6 +334,8 @@ public class MusicService extends Service {
         filter.addAction(PREVIOUS_FORCE_ACTION);
         filter.addAction(REPEAT_ACTION);
         filter.addAction(SHUFFLE_ACTION);
+        filter.addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
         // Attach the broadcast listener
         registerReceiver(mIntentReceiver, filter);
 
@@ -568,6 +571,11 @@ public class MusicService extends Service {
             cycleShuffle();
         } else if (UPDATE_PREFERENCES.equals(action)) {
             onPreferencesUpdate(intent.getExtras());
+        }
+        else if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(action)) {
+            if (PreferencesUtility.getInstance(getApplicationContext()).pauseEnabledOnDetach()) {
+                pause();
+            }
         }
     }
 
@@ -1264,7 +1272,7 @@ public class MusicService extends Service {
             mNotificationPostTime = System.currentTimeMillis();
         }
 
-        android.support.v4.app.NotificationCompat.Builder builder = new android.support.v4.app.NotificationCompat.Builder(this, CHANNEL_ID)
+        androidx.core.app.NotificationCompat.Builder builder = new androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setLargeIcon(artwork)
                 .setContentIntent(clickIntent)
@@ -2852,5 +2860,4 @@ public class MusicService extends Service {
             refresh();
         }
     }
-
 }

@@ -54,11 +54,11 @@ public class SettingsFragment extends PreferenceFragment implements SharedPrefer
     private static final String KEY_START_PAGE = "start_page_preference";
     private boolean lastFMlogedin;
 
-    Preference nowPlayingSelector,  lastFMlogin, lockscreen, xposed;
+    private Preference nowPlayingSelector,  lastFMlogin, lockscreen, xposed;
 
-    SwitchPreference toggleAnimations;
-    ListPreference themePreference, startPagePreference;
-    PreferencesUtility mPreferences;
+    private SwitchPreference toggleAnimations;
+    private ListPreference themePreference, startPagePreference;
+    private PreferencesUtility mPreferences;
     private String mAteKey;
 
     @Override
@@ -165,8 +165,7 @@ public class SettingsFragment extends PreferenceFragment implements SharedPrefer
                     updateLastFM();
                 } else {
                     LastFmLoginDialog lastFmLoginDialog = new LastFmLoginDialog();
-                    lastFmLoginDialog.setTargetFragment(SettingsFragment.this, 0);
-                    lastFmLoginDialog.show(getFragmentManager(), LastFmLoginDialog.FRAGMENT_NAME);
+                    lastFmLoginDialog.show(getChildFragmentManager(), LastFmLoginDialog.FRAGMENT_NAME);
 
                 }
                 return true;

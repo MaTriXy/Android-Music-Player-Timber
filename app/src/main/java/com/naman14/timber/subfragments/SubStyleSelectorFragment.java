@@ -18,9 +18,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
-import android.support.annotation.NonNull;
-import android.support.annotation.Nullable;
-import android.support.v4.app.Fragment;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -40,11 +40,11 @@ public class SubStyleSelectorFragment extends Fragment {
 
     private static final String ARG_PAGE_NUMBER = "pageNumber";
     private static final String WHAT = "what";
-    SharedPreferences.Editor editor;
-    SharedPreferences preferences;
-    LinearLayout currentStyle;
-    View foreground;
-    ImageView styleImage, imgLock;
+    private SharedPreferences.Editor editor;
+    private SharedPreferences preferences;
+    private LinearLayout currentStyle;
+    private View foreground;
+    private ImageView styleImage, imgLock;
 
     public static SubStyleSelectorFragment newInstance(int pageNumber, String what) {
         SubStyleSelectorFragment fragment = new SubStyleSelectorFragment();

@@ -6,11 +6,11 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.MediaStore;
-import android.support.annotation.Nullable;
-import android.support.v4.app.Fragment;
-import android.support.v7.app.ActionBar;
-import android.support.v7.app.AppCompatActivity;
-import android.support.v7.widget.Toolbar;
+import androidx.annotation.Nullable;
+import androidx.fragment.app.Fragment;
+import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -32,7 +32,8 @@ import retrofit.client.Response;
  */
 
 public class LyricsFragment extends Fragment {
-    String lyrics = null;
+
+    private String lyrics = null;
     private Toolbar toolbar;
     private View rootView;
 
@@ -50,15 +51,17 @@ public class LyricsFragment extends Fragment {
     }
 
     private void loadLyrics() {
+
         final View lyricsView = rootView.findViewById(R.id.lyrics);
         final TextView poweredbyTextView = (TextView) lyricsView.findViewById(R.id.lyrics_makeitpersonal);
         poweredbyTextView.setVisibility(View.GONE);
         final TextView lyricsTextView = (TextView) lyricsView.findViewById(R.id.lyrics_text);
-        lyricsTextView.setText("Loading...");
+        lyricsTextView.setText(getString(R.string.lyrics_loading));
         String filename = getRealPathFromURI(Uri.parse(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI + "/" + MusicPlayer.getCurrentAudioId()));
         if (filename != null && lyrics == null) {
             lyrics = LyricsExtractor.getLyrics(new File(filename));
         }
+
         if (lyrics != null) {
             lyricsTextView.setText(lyrics);
         } else {
@@ -68,6 +71,7 @@ public class LyricsFragment extends Fragment {
                 if (i != -1) {
                     artist = artist.substring(0, i);
                 }
+
                 LyricsLoader.getInstance(this.getContext()).getLyrics(artist, MusicPlayer.getTrackName(), new Callback<String>() {
                     @Override
                     public void success(String s, Response response) {
@@ -85,6 +89,7 @@ public class LyricsFragment extends Fragment {
                         lyricsTextView.setText(R.string.no_lyrics);
                     }
                 });
+
             } else {
                 lyricsTextView.setText(R.string.no_lyrics);
             }
@@ -96,8 +101,10 @@ public class LyricsFragment extends Fragment {
         ((AppCompatActivity) getActivity()).setSupportActionBar(toolbar);
 
         final ActionBar ab = ((AppCompatActivity) getActivity()).getSupportActionBar();
-        ab.setDisplayShowTitleEnabled(false);
         ab.setDisplayHomeAsUpEnabled(true);
+        if (MusicPlayer.getTrackName() != null) {
+            ab.setTitle(MusicPlayer.getTrackName());
+        }
     }
 
     @Override
